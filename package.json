@@ -9,7 +9,7 @@
     "start": "next start",
     "lint": "next lint",
     "test": "jest",
-    "predeploy": "npm run build",
+    "predeploy": "npm run build && cp public/index.html out/index.html && cp public/test.html out/test.html",
     "deploy": "gh-pages -d out"
   },
   "dependencies": {
