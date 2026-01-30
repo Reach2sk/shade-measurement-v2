@@ -343,7 +343,7 @@
     <p class="text-gray-600 mb-8 text-center">Measure your windows for perfect-fit shades</p>
     <button type="button" class="btn-primary max-w-xs mb-4" onclick="showScreen('permission')">Start Measuring</button>
     <button type="button" class="btn-text" onclick="showScreen('settings')">Settings</button>
-    <p class="text-gray-400 text-xs mt-8">Version 0.4.0 (Edge Detection)</p>
+    <p class="text-gray-400 text-xs mt-8">Version 0.5.0 (Improved Detection)</p>
   </div>
 
   <!-- PERMISSION SCREEN -->
@@ -529,8 +529,8 @@
     </div>
     <div class="mt-8" style="border-top: 1px solid #e5e7eb; padding-top: 24px;">
       <p class="text-gray-500 text-xs">
-        Window Measurement App v0.4.0<br>
-        With Edge Detection
+        Window Measurement App v0.5.0<br>
+        Improved Detection
       </p>
     </div>
   </div>
@@ -573,133 +573,127 @@
     }
 
     // ==========================================
-    // EDGE DETECTION - Real image analysis
+    // WINDOW DETECTION - Simplified approach
     // ==========================================
 
-    // Sobel edge detection
-    function sobelEdgeDetection(imageData) {
-      var width = imageData.width;
-      var height = imageData.height;
+    // Find window by looking for bright rectangular regions
+    // Windows typically appear brighter than surrounding walls
+    function findWindowRectangle(imageData, width, height) {
       var data = imageData.data;
-      var grayData = new Float32Array(width * height);
-      var edgeData = new Float32Array(width * height);
+      var blockSize = 10; // Analyze in 10x10 blocks for speed
+      var blocksX = Math.floor(width / blockSize);
+      var blocksY = Math.floor(height / blockSize);
+      var brightness = [];
 
-      // Convert to grayscale
-      for (var i = 0; i < width * height; i++) {
-        var idx = i * 4;
-        grayData[i] = 0.299 * data[idx] + 0.587 * data[idx + 1] + 0.114 * data[idx + 2];
-      }
-
-      // Sobel kernels
-      var sobelX = [-1, 0, 1, -2, 0, 2, -1, 0, 1];
-      var sobelY = [-1, -2, -1, 0, 0, 0, 1, 2, 1];
-
-      // Apply Sobel operator
-      for (var y = 1; y < height - 1; y++) {
-        for (var x = 1; x < width - 1; x++) {
-          var gx = 0, gy = 0;
-          for (var ky = -1; ky <= 1; ky++) {
-            for (var kx = -1; kx <= 1; kx++) {
-              var pixIdx = (y + ky) * width + (x + kx);
-              var kernelIdx = (ky + 1) * 3 + (kx + 1);
-              gx += grayData[pixIdx] * sobelX[kernelIdx];
-              gy += grayData[pixIdx] * sobelY[kernelIdx];
+      // Calculate average brightness for each block
+      for (var by = 0; by < blocksY; by++) {
+        brightness[by] = [];
+        for (var bx = 0; bx < blocksX; bx++) {
+          var sum = 0;
+          var count = 0;
+          for (var py = 0; py < blockSize; py++) {
+            for (var px = 0; px < blockSize; px++) {
+              var x = bx * blockSize + px;
+              var y = by * blockSize + py;
+              var idx = (y * width + x) * 4;
+              // Luminance
+              sum += 0.299 * data[idx] + 0.587 * data[idx + 1] + 0.114 * data[idx + 2];
+              count++;
             }
           }
-          edgeData[y * width + x] = Math.sqrt(gx * gx + gy * gy);
+          brightness[by][bx] = sum / count;
         }
       }
 
-      return edgeData;
-    }
-
-    // Find the strongest rectangular contour (window frame)
-    function findWindowRectangle(edgeData, width, height) {
-      var threshold = 50; // Edge strength threshold
-      var minSize = Math.min(width, height) * 0.15; // Minimum window size (15% of view)
-      var maxSize = Math.min(width, height) * 0.95; // Maximum window size
-
-      // Find strong vertical and horizontal edges
-      var verticalEdges = [];
-      var horizontalEdges = [];
-
-      // Scan for vertical edges (left/right window boundaries)
-      for (var x = Math.floor(width * 0.05); x < width * 0.95; x += 5) {
-        var edgeStrength = 0;
-        for (var y = Math.floor(height * 0.1); y < height * 0.9; y++) {
-          if (edgeData[y * width + x] > threshold) {
-            edgeStrength++;
-          }
-        }
-        if (edgeStrength > height * 0.3) {
-          verticalEdges.push({ x: x, strength: edgeStrength });
-        }
-      }
-
-      // Scan for horizontal edges (top/bottom window boundaries)
-      for (var y = Math.floor(height * 0.05); y < height * 0.95; y += 5) {
-        var edgeStrength = 0;
-        for (var x = Math.floor(width * 0.1); x < width * 0.9; x++) {
-          if (edgeData[y * width + x] > threshold) {
-            edgeStrength++;
-          }
-        }
-        if (edgeStrength > width * 0.3) {
-          horizontalEdges.push({ y: y, strength: edgeStrength });
-        }
-      }
-
-      // Sort by strength
-      verticalEdges.sort(function(a, b) { return b.strength - a.strength; });
-      horizontalEdges.sort(function(a, b) { return b.strength - a.strength; });
-
-      // Find best rectangle from edge pairs
+      // Find the brightest rectangular region (likely the window)
       var bestRect = null;
       var bestScore = 0;
 
-      // Try combinations of vertical edges (left/right)
-      for (var i = 0; i < Math.min(verticalEdges.length, 10); i++) {
-        for (var j = i + 1; j < Math.min(verticalEdges.length, 10); j++) {
-          var left = Math.min(verticalEdges[i].x, verticalEdges[j].x);
-          var right = Math.max(verticalEdges[i].x, verticalEdges[j].x);
-          var rectWidth = right - left;
+      // Minimum and maximum window size (in blocks)
+      var minBlocksW = Math.floor(blocksX * 0.15);
+      var maxBlocksW = Math.floor(blocksX * 0.85);
+      var minBlocksH = Math.floor(blocksY * 0.10);
+      var maxBlocksH = Math.floor(blocksY * 0.70);
 
-          if (rectWidth < minSize || rectWidth > maxSize) continue;
+      // Scan for rectangular bright regions
+      // Use a sliding window approach
+      for (var h = minBlocksH; h <= maxBlocksH; h += 2) {
+        for (var w = minBlocksW; w <= maxBlocksW; w += 2) {
+          for (var sy = 1; sy < blocksY - h - 1; sy += 2) {
+            for (var sx = 1; sx < blocksX - w - 1; sx += 2) {
+              // Calculate average brightness inside rectangle
+              var innerSum = 0;
+              var innerCount = 0;
+              for (var iy = sy; iy < sy + h; iy++) {
+                for (var ix = sx; ix < sx + w; ix++) {
+                  innerSum += brightness[iy][ix];
+                  innerCount++;
+                }
+              }
+              var innerAvg = innerSum / innerCount;
 
-          // Try combinations of horizontal edges (top/bottom)
-          for (var k = 0; k < Math.min(horizontalEdges.length, 10); k++) {
-            for (var l = k + 1; l < Math.min(horizontalEdges.length, 10); l++) {
-              var top = Math.min(horizontalEdges[k].y, horizontalEdges[l].y);
-              var bottom = Math.max(horizontalEdges[k].y, horizontalEdges[l].y);
-              var rectHeight = bottom - top;
+              // Calculate average brightness of border (surrounding area)
+              var borderSum = 0;
+              var borderCount = 0;
+              // Top border
+              if (sy > 0) {
+                for (var bx = sx; bx < sx + w; bx++) {
+                  borderSum += brightness[sy - 1][bx];
+                  borderCount++;
+                }
+              }
+              // Bottom border
+              if (sy + h < blocksY) {
+                for (var bx = sx; bx < sx + w; bx++) {
+                  borderSum += brightness[sy + h][bx];
+                  borderCount++;
+                }
+              }
+              // Left border
+              if (sx > 0) {
+                for (var by = sy; by < sy + h; by++) {
+                  borderSum += brightness[by][sx - 1];
+                  borderCount++;
+                }
+              }
+              // Right border
+              if (sx + w < blocksX) {
+                for (var by = sy; by < sy + h; by++) {
+                  borderSum += brightness[by][sx + w];
+                  borderCount++;
+                }
+              }
+              var borderAvg = borderCount > 0 ? borderSum / borderCount : 0;
 
-              if (rectHeight < minSize || rectHeight > maxSize) continue;
+              // Score: higher if inside is brighter than border (window effect)
+              // Also consider: contrast, position (prefer centered), aspect ratio
+              var contrast = innerAvg - borderAvg;
+              if (contrast < 5) continue; // Must have some brightness difference
 
-              // Score based on edge strength and aspect ratio
-              var aspectRatio = rectWidth / rectHeight;
-              var aspectScore = (aspectRatio > 0.5 && aspectRatio < 2) ? 1 : 0.5;
+              var aspectRatio = w / h;
+              var aspectScore = (aspectRatio > 0.4 && aspectRatio < 2.5) ? 1 : 0.5;
 
-              // Check if rectangle is reasonably centered
-              var centerX = (left + right) / 2;
-              var centerY = (top + bottom) / 2;
-              var centerScore = 1 - Math.abs(centerX - width / 2) / (width / 2) * 0.3
-                                - Math.abs(centerY - height / 2) / (height / 2) * 0.3;
+              // Prefer centered rectangles
+              var centerX = sx + w / 2;
+              var centerY = sy + h / 2;
+              var centerScore = 1 - Math.abs(centerX - blocksX / 2) / (blocksX / 2) * 0.2
+                                - Math.abs(centerY - blocksY / 2) / (blocksY / 2) * 0.2;
 
-              // Size preference (prefer larger windows)
-              var sizeScore = (rectWidth * rectHeight) / (width * height);
+              // Size preference
+              var sizeScore = (w * h) / (blocksX * blocksY);
 
-              var totalScore = (verticalEdges[i].strength + verticalEdges[j].strength +
-                               horizontalEdges[k].strength + horizontalEdges[l].strength) *
-                              aspectScore * centerScore * (0.5 + sizeScore);
+              var score = contrast * aspectScore * centerScore * (0.3 + sizeScore * 2);
 
-              if (totalScore > bestScore) {
-                bestScore = totalScore;
+              if (score > bestScore) {
+                bestScore = score;
                 bestRect = {
-                  x: left,
-                  y: top,
-                  width: rectWidth,
-                  height: rectHeight,
-                  score: totalScore
+                  x: sx * blockSize,
+                  y: sy * blockSize,
+                  width: w * blockSize,
+                  height: h * blockSize,
+                  score: score,
+                  contrast: contrast,
+                  innerBrightness: innerAvg
                 };
               }
             }
@@ -716,24 +710,35 @@
       var containerWidth = canvas.offsetWidth;
       var containerHeight = canvas.offsetHeight;
 
-      // Set canvas to match container
-      canvas.width = containerWidth;
-      canvas.height = containerHeight;
+      // Use smaller resolution for faster processing
+      var analysisWidth = Math.min(containerWidth, 320);
+      var analysisHeight = Math.min(containerHeight, 480);
+      var scaleX = containerWidth / analysisWidth;
+      var scaleY = containerHeight / analysisHeight;
+
+      // Set canvas for analysis
+      canvas.width = analysisWidth;
+      canvas.height = analysisHeight;
 
       // Draw scaled video frame
-      ctx.drawImage(video, 0, 0, containerWidth, containerHeight);
+      ctx.drawImage(video, 0, 0, analysisWidth, analysisHeight);
 
       // Get image data for analysis
-      var imageData = ctx.getImageData(0, 0, containerWidth, containerHeight);
-
-      // Run edge detection
-      var edgeData = sobelEdgeDetection(imageData);
+      var imageData = ctx.getImageData(0, 0, analysisWidth, analysisHeight);
 
       // Find window rectangle
-      var rect = findWindowRectangle(edgeData, containerWidth, containerHeight);
+      var rect = findWindowRectangle(imageData, analysisWidth, analysisHeight);
 
-      // Clear canvas (we'll draw detection box separately)
-      ctx.clearRect(0, 0, containerWidth, containerHeight);
+      // Clear canvas
+      ctx.clearRect(0, 0, analysisWidth, analysisHeight);
+
+      // Scale rectangle back to container size
+      if (rect) {
+        rect.x = Math.round(rect.x * scaleX);
+        rect.y = Math.round(rect.y * scaleY);
+        rect.width = Math.round(rect.width * scaleX);
+        rect.height = Math.round(rect.height * scaleY);
+      }
 
       return rect;
     }
@@ -868,7 +873,7 @@
 
         var rect = detectWindowInFrame(video, canvas, passNum);
 
-        if (rect && rect.score > 5000) {
+        if (rect && rect.score > 5) {
           // Found a rectangle
           detectedBox.style.display = 'block';
           detectedBox.style.left = rect.x + 'px';
@@ -1163,7 +1168,7 @@
       document.getElementById('settings-camera').textContent = cameraStream ? 'active' : 'not initialized';
     }
 
-    console.log('App loaded - v0.4.0 with Edge Detection');
+    console.log('App loaded - v0.5.0 with Brightness Detection');
   </script>
 </body>
 </html>
