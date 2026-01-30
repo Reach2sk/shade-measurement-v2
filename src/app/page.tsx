@@ -1,71 +1,58 @@
 'use client';
 
-import React, { useEffect, useRef, useState, useCallback } from 'react';
-import { MeasurementProviderWrapper, useMeasurement } from '@/providers/MeasurementProvider';
-import { CameraOverlay, CameraWarnings } from '@/components/CameraOverlay';
+import React, { useState } from 'react';
 import { formatInchesFraction, formatConfidence, formatDimensions } from '@/utils/format';
 import { roundUpToSixteenth } from '@/utils/format';
 import { shouldRecommendAdditionalPass, aggregateResults } from '@/utils/aggregate';
-import { appendDebugRecord, getDebugLog, clearDebugLog, copyDebugLogToClipboard, downloadDebugLog } from '@/utils/debugLog';
 import type { PassResult, ConfidenceCategory } from '@/providers/types';
 
 type MountType = 'inside' | 'outside';
 type Screen = 'home' | 'permission' | 'mountSelection' | 'pass1' | 'pass1Review' | 'pass2' | 'pass2Review' | 'pass3' | 'completion' | 'details' | 'settings';
 
-function TutorialFlow() {
-  const measurement = useMeasurement();
-  const containerRef = useRef<HTMLDivElement>(null);
-  const [containerSize, setContainerSize] = useState({ width: 0, height: 0 });
-  const [isCapturing, setIsCapturing] = useState(false);
+// Simplified mock capture - returns simulated measurement
+function mockCapture(): PassResult {
+  const baseWidth = 35 + Math.random() * 2;
+  const baseHeight = 47 + Math.random() * 2;
+  const confidence = 0.7 + Math.random() * 0.25;
 
-  // Simple state management using React useState
+  return {
+    widthInInches: baseWidth,
+    heightInInches: baseHeight,
+    confidence,
+    category: confidence >= 0.85 ? 'Excellent' : confidence >= 0.65 ? 'OK' : 'Not Great',
+    timestamp: Date.now(),
+    frameMetadata: {
+      pxToInchUsed: null,
+      detectorConfidence: confidence,
+    },
+  };
+}
+
+// Main Tutorial Flow - simplified without MeasurementProviderWrapper
+function TutorialFlow() {
   const [screen, setScreen] = useState<Screen>('home');
   const [mountType, setMountType] = useState<MountType | null>(null);
   const [passes, setPasses] = useState<PassResult[]>([]);
-  const [permissionDenied, setPermissionDenied] = useState(false);
+  const [isCapturing, setIsCapturing] = useState(false);
 
-  // Track container size for overlay positioning
-  useEffect(() => {
-    const updateSize = () => {
-      if (containerRef.current) {
-        setContainerSize({
-          width: containerRef.current.offsetWidth,
-          height: containerRef.current.offsetHeight,
-        });
-      }
-    };
-
-    updateSize();
-    window.addEventListener('resize', updateSize);
-    return () => window.removeEventListener('resize', updateSize);
-  }, []);
-
-  // Handle capture action
-  const handleCapture = useCallback(async () => {
+  // Handle capture action - simplified
+  const handleCapture = () => {
     if (isCapturing) return;
     setIsCapturing(true);
 
-    const result = await measurement.capture();
-    if (result) {
-      appendDebugRecord(result, measurement.provider?.providerType || 'mock');
+    // Simulate async capture with timeout
+    setTimeout(() => {
+      const result = mockCapture();
       setPasses(prev => [...prev, result]);
 
       // Move to review screen
       if (screen === 'pass1') setScreen('pass1Review');
       else if (screen === 'pass2') setScreen('pass2Review');
       else if (screen === 'pass3') setScreen('completion');
-    }
 
-    setIsCapturing(false);
-  }, [measurement, isCapturing, screen]);
-
-  // Initialize measurement provider when entering camera states
-  useEffect(() => {
-    const cameraStates: Screen[] = ['pass1', 'pass2', 'pass3'];
-    if (cameraStates.includes(screen) && !measurement.isInitialized) {
-      measurement.initialize();
-    }
-  }, [screen, measurement]);
+      setIsCapturing(false);
+    }, 500);
+  };
 
   // Calculate final results
   const finalResults = passes.length > 0 ? aggregateResults(passes) : null;
@@ -74,10 +61,8 @@ function TutorialFlow() {
   const goToScreen = (s: Screen) => setScreen(s);
 
   const restart = () => {
-    measurement.cleanup();
     setPasses([]);
     setMountType(null);
-    setPermissionDenied(false);
     setScreen('home');
   };
 
@@ -89,13 +74,7 @@ function TutorialFlow() {
     case 'permission':
       return (
         <PermissionScreen
-          isDenied={permissionDenied}
-          onGranted={() => {
-            setPermissionDenied(false);
-            goToScreen('mountSelection');
-          }}
-          onDenied={() => setPermissionDenied(true)}
-          onRetry={() => setPermissionDenied(false)}
+          onGranted={() => goToScreen('mountSelection')}
           onBack={() => goToScreen('home')}
         />
       );
@@ -119,72 +98,40 @@ function TutorialFlow() {
       return (
         <div className="h-screen flex flex-col bg-black">
           <div className="bg-gray-900 text-white p-4 flex items-center justify-between">
-            <button onClick={() => goToScreen(backScreen)} className="text-white">
+            <button
+              onClick={() => goToScreen(backScreen)}
+              className="text-white active:text-gray-400"
+              style={{ WebkitTapHighlightColor: 'transparent' }}
+            >
               ← Back
             </button>
             <span className="font-semibold">Pass {passNumber} of {passNumber <= 2 ? '2+' : '3'}</span>
             <div className="w-12" />
           </div>
 
-          <div ref={containerRef} className="flex-1 relative bg-gray-800">
-            {measurement.isInitializing && (
-              <div className="absolute inset-0 flex items-center justify-center">
-                <div className="text-white">Initializing camera...</div>
+          <div className="flex-1 relative bg-gray-800">
+            {/* Mock Camera View */}
+            <div className="absolute inset-0 bg-gradient-to-b from-gray-700 to-gray-900 flex items-center justify-center">
+              <div className="text-center">
+                <div className="text-gray-400 text-sm mb-2">Mock Camera View</div>
+                <div className="border-2 border-dashed border-gray-500 w-48 h-64 mx-auto flex items-center justify-center">
+                  <span className="text-gray-500 text-xs">Window Frame</span>
+                </div>
               </div>
-            )}
-
-            {measurement.isInitialized && (
-              <>
-                {measurement.provider?.providerType === 'mock' && (
-                  <div className="absolute inset-0 bg-gradient-to-b from-gray-700 to-gray-900 flex items-center justify-center">
-                    <div className="text-gray-400 text-sm">Mock Camera View</div>
-                  </div>
-                )}
-
-                {measurement.videoElement && (
-                  <video
-                    ref={(el) => {
-                      if (el && measurement.videoElement) {
-                        el.srcObject = measurement.videoElement.srcObject;
-                      }
-                    }}
-                    autoPlay
-                    playsInline
-                    muted
-                    className="absolute inset-0 w-full h-full object-cover"
-                  />
-                )}
-
-                <CameraOverlay
-                  detection={measurement.detection}
-                  stability={measurement.stability}
-                  suggestCapture={measurement.suggestCapture}
-                  containerWidth={containerSize.width}
-                  containerHeight={containerSize.height}
-                />
-
-                <CameraWarnings
-                  stability={measurement.stability}
-                  suggestCapture={measurement.suggestCapture}
-                />
-              </>
-            )}
+            </div>
           </div>
 
           <div className="bg-gray-900 p-6 flex justify-center">
             <button
               onClick={handleCapture}
-              disabled={isCapturing || !measurement.isInitialized}
-              className={`w-20 h-20 rounded-full border-4 flex items-center justify-center ${
-                measurement.suggestCapture
-                  ? 'bg-green-600 border-green-400'
-                  : 'bg-white border-gray-300'
-              } ${isCapturing ? 'opacity-50' : ''}`}
+              disabled={isCapturing}
+              className={`w-20 h-20 rounded-full border-4 flex items-center justify-center bg-white border-gray-300 ${isCapturing ? 'opacity-50' : ''}`}
+              style={{ WebkitTapHighlightColor: 'transparent' }}
             >
               {isCapturing ? (
                 <span className="text-gray-600">...</span>
               ) : (
-                <div className={`w-14 h-14 rounded-full ${measurement.suggestCapture ? 'bg-green-400' : 'bg-red-500'}`} />
+                <div className="w-14 h-14 rounded-full bg-red-500" />
               )}
             </button>
           </div>
@@ -271,53 +218,51 @@ function HomeScreen({ onStart, onSettings }: { onStart: () => void; onSettings: 
 
       <button
         onClick={onStart}
-        className="bg-blue-600 text-white px-8 py-4 rounded-lg text-lg font-semibold mb-4 w-full max-w-xs active:bg-blue-700"
+        className="bg-blue-600 text-white px-8 py-4 rounded-lg text-lg font-semibold mb-4 w-full max-w-xs active:bg-blue-700 select-none"
+        style={{ WebkitTapHighlightColor: 'transparent', touchAction: 'manipulation' }}
       >
         Start Measuring
       </button>
 
       <button
         onClick={onSettings}
-        className="text-gray-500 text-sm"
+        className="text-gray-500 text-sm select-none"
+        style={{ WebkitTapHighlightColor: 'transparent', touchAction: 'manipulation' }}
       >
         Settings
       </button>
 
-      <p className="text-gray-400 text-xs mt-8">Version 0.1.1</p>
+      <p className="text-gray-400 text-xs mt-8">Version 0.1.2</p>
     </div>
   );
 }
 
-// Permission Screen
+// Permission Screen - simplified
 function PermissionScreen({
-  isDenied,
   onGranted,
-  onDenied,
-  onRetry,
   onBack,
 }: {
-  isDenied: boolean;
   onGranted: () => void;
-  onDenied: () => void;
-  onRetry: () => void;
   onBack: () => void;
 }) {
   const [isRequesting, setIsRequesting] = useState(false);
 
-  const requestPermission = async () => {
+  const requestPermission = () => {
     setIsRequesting(true);
-    try {
-      await new Promise((resolve) => setTimeout(resolve, 500));
+    // Simulate permission request
+    setTimeout(() => {
+      setIsRequesting(false);
       onGranted();
-    } catch {
-      onDenied();
-    }
-    setIsRequesting(false);
+    }, 500);
   };
 
   return (
     <div className="min-h-screen flex flex-col p-6 bg-white">
-      <button onClick={onBack} className="text-blue-600 mb-8">
+      <button
+        onClick={onBack}
+        className="text-blue-600 mb-8 select-none"
+        style={{ WebkitTapHighlightColor: 'transparent', touchAction: 'manipulation' }}
+      >
         ← Back
       </button>
 
@@ -329,19 +274,15 @@ function PermissionScreen({
         <h2 className="text-xl font-bold text-gray-900 mb-2">Camera Access</h2>
         <p className="text-gray-600 mb-8 text-center">
           We need access to your camera to measure your windows.
-          {isDenied && (
-            <span className="block text-red-600 mt-2">
-              Camera access was denied. Please enable it in your device settings.
-            </span>
-          )}
         </p>
 
         <button
-          onClick={isDenied ? onRetry : requestPermission}
+          onClick={requestPermission}
           disabled={isRequesting}
-          className="bg-blue-600 text-white px-8 py-4 rounded-lg text-lg font-semibold w-full max-w-xs active:bg-blue-700"
+          className="bg-blue-600 text-white px-8 py-4 rounded-lg text-lg font-semibold w-full max-w-xs active:bg-blue-700 select-none"
+          style={{ WebkitTapHighlightColor: 'transparent', touchAction: 'manipulation' }}
         >
-          {isRequesting ? 'Requesting...' : isDenied ? 'Try Again' : 'Allow Camera Access'}
+          {isRequesting ? 'Requesting...' : 'Allow Camera Access'}
         </button>
       </div>
     </div>
@@ -358,7 +299,11 @@ function MountSelectionScreen({
 }) {
   return (
     <div className="min-h-screen flex flex-col p-6 bg-white">
-      <button onClick={onBack} className="text-blue-600 mb-8">
+      <button
+        onClick={onBack}
+        className="text-blue-600 mb-8 select-none"
+        style={{ WebkitTapHighlightColor: 'transparent', touchAction: 'manipulation' }}
+      >
         ← Back
       </button>
 
@@ -370,7 +315,8 @@ function MountSelectionScreen({
       <div className="space-y-4">
         <button
           onClick={() => onSelect('inside')}
-          className="w-full p-6 border-2 border-gray-200 rounded-lg text-left active:border-blue-600"
+          className="w-full p-6 border-2 border-gray-200 rounded-lg text-left active:border-blue-600 select-none"
+          style={{ WebkitTapHighlightColor: 'transparent', touchAction: 'manipulation' }}
         >
           <span className="font-semibold text-gray-900">Inside Mount</span>
           <p className="text-gray-600 text-sm mt-1">
@@ -380,7 +326,8 @@ function MountSelectionScreen({
 
         <button
           onClick={() => onSelect('outside')}
-          className="w-full p-6 border-2 border-gray-200 rounded-lg text-left active:border-blue-600"
+          className="w-full p-6 border-2 border-gray-200 rounded-lg text-left active:border-blue-600 select-none"
+          style={{ WebkitTapHighlightColor: 'transparent', touchAction: 'manipulation' }}
         >
           <span className="font-semibold text-gray-900">Outside Mount</span>
           <p className="text-gray-600 text-sm mt-1">
@@ -417,7 +364,11 @@ function PassReviewScreen({
 
   return (
     <div className="min-h-screen flex flex-col p-6 bg-white">
-      <button onClick={onBack} className="text-blue-600 mb-8">
+      <button
+        onClick={onBack}
+        className="text-blue-600 mb-8 select-none"
+        style={{ WebkitTapHighlightColor: 'transparent', touchAction: 'manipulation' }}
+      >
         ← Back
       </button>
 
@@ -450,7 +401,8 @@ function PassReviewScreen({
       <div className="mt-auto space-y-3">
         <button
           onClick={onContinue}
-          className="bg-blue-600 text-white px-8 py-4 rounded-lg text-lg font-semibold w-full active:bg-blue-700"
+          className="bg-blue-600 text-white px-8 py-4 rounded-lg text-lg font-semibold w-full active:bg-blue-700 select-none"
+          style={{ WebkitTapHighlightColor: 'transparent', touchAction: 'manipulation' }}
         >
           {passNumber === 1 ? 'Continue to Pass 2' : recommendPass3 ? 'Take Pass 3' : 'View Results'}
         </button>
@@ -458,7 +410,8 @@ function PassReviewScreen({
         {showPass3Option && onSkipToResults && (
           <button
             onClick={onSkipToResults}
-            className="text-gray-600 py-2 w-full"
+            className="text-gray-600 py-2 w-full select-none"
+            style={{ WebkitTapHighlightColor: 'transparent', touchAction: 'manipulation' }}
           >
             {recommendPass3 ? 'Skip and View Results' : 'View Results'}
           </button>
@@ -527,21 +480,24 @@ function CompletionScreen({
       <div className="space-y-3">
         <button
           onClick={onViewDetails}
-          className="bg-gray-100 text-gray-900 px-8 py-4 rounded-lg font-semibold w-full"
+          className="bg-gray-100 text-gray-900 px-8 py-4 rounded-lg font-semibold w-full select-none"
+          style={{ WebkitTapHighlightColor: 'transparent', touchAction: 'manipulation' }}
         >
           View Details
         </button>
 
         <button
           onClick={onRestart}
-          className="bg-blue-600 text-white px-8 py-4 rounded-lg font-semibold w-full active:bg-blue-700"
+          className="bg-blue-600 text-white px-8 py-4 rounded-lg font-semibold w-full active:bg-blue-700 select-none"
+          style={{ WebkitTapHighlightColor: 'transparent', touchAction: 'manipulation' }}
         >
           Measure Another Window
         </button>
 
         <button
           onClick={onSettings}
-          className="text-gray-500 text-sm w-full"
+          className="text-gray-500 text-sm w-full select-none"
+          style={{ WebkitTapHighlightColor: 'transparent', touchAction: 'manipulation' }}
         >
           Settings
         </button>
@@ -560,7 +516,11 @@ function DetailsScreen({
 }) {
   return (
     <div className="min-h-screen flex flex-col p-6 bg-white">
-      <button onClick={onBack} className="text-blue-600 mb-8">
+      <button
+        onClick={onBack}
+        className="text-blue-600 mb-8 select-none"
+        style={{ WebkitTapHighlightColor: 'transparent', touchAction: 'manipulation' }}
+      >
         ← Back
       </button>
 
@@ -605,33 +565,15 @@ function DetailsScreen({
   );
 }
 
-// Settings Screen
+// Settings Screen - simplified
 function SettingsScreen({ onBack }: { onBack: () => void }) {
-  const [logs, setLogs] = useState<ReturnType<typeof getDebugLog>>([]);
-  const [copyStatus, setCopyStatus] = useState<string | null>(null);
-
-  useEffect(() => {
-    setLogs(getDebugLog());
-  }, []);
-
-  const handleClear = () => {
-    clearDebugLog();
-    setLogs([]);
-  };
-
-  const handleCopy = async () => {
-    const success = await copyDebugLogToClipboard();
-    setCopyStatus(success ? 'Copied!' : 'Failed to copy');
-    setTimeout(() => setCopyStatus(null), 2000);
-  };
-
-  const handleDownload = () => {
-    downloadDebugLog();
-  };
-
   return (
     <div className="min-h-screen flex flex-col p-6 bg-white">
-      <button onClick={onBack} className="text-blue-600 mb-8">
+      <button
+        onClick={onBack}
+        className="text-blue-600 mb-8 select-none"
+        style={{ WebkitTapHighlightColor: 'transparent', touchAction: 'manipulation' }}
+      >
         ← Back
       </button>
 
@@ -639,49 +581,17 @@ function SettingsScreen({ onBack }: { onBack: () => void }) {
 
       <div className="space-y-6">
         <div>
-          <h3 className="font-semibold text-gray-900 mb-2">Debug Log</h3>
+          <h3 className="font-semibold text-gray-900 mb-2">Debug Info</h3>
           <p className="text-gray-600 text-sm mb-4">
-            {logs.length} records stored
+            This is a simplified version for testing Safari button clicks.
           </p>
-
-          <div className="flex gap-2 flex-wrap">
-            <button
-              onClick={handleCopy}
-              className="bg-gray-100 text-gray-900 px-4 py-2 rounded text-sm active:bg-gray-200"
-            >
-              {copyStatus || 'Copy to Clipboard'}
-            </button>
-            <button
-              onClick={handleDownload}
-              className="bg-gray-100 text-gray-900 px-4 py-2 rounded text-sm active:bg-gray-200"
-            >
-              Download JSON
-            </button>
-            <button
-              onClick={handleClear}
-              className="bg-red-100 text-red-800 px-4 py-2 rounded text-sm active:bg-red-200"
-            >
-              Clear Log
-            </button>
-          </div>
         </div>
-
-        {logs.length > 0 && (
-          <div>
-            <h3 className="font-semibold text-gray-900 mb-2">Recent Records</h3>
-            <div className="bg-gray-100 rounded-lg p-4 max-h-64 overflow-y-auto">
-              <pre className="text-xs text-gray-700 whitespace-pre-wrap">
-                {JSON.stringify(logs.slice(-5), null, 2)}
-              </pre>
-            </div>
-          </div>
-        )}
 
         <div className="pt-6 border-t border-gray-200">
           <p className="text-gray-500 text-xs">
-            Window Measurement App v0.1.1
+            Window Measurement App v0.1.2
             <br />
-            Using Mock Provider for UI development
+            Simplified Mock Provider (no context wrapper)
           </p>
         </div>
       </div>
@@ -689,11 +599,7 @@ function SettingsScreen({ onBack }: { onBack: () => void }) {
   );
 }
 
-// Main page component
+// Main page component - NO wrapper, direct render
 export default function Page() {
-  return (
-    <MeasurementProviderWrapper>
-      <TutorialFlow />
-    </MeasurementProviderWrapper>
-  );
+  return <TutorialFlow />;
 }
