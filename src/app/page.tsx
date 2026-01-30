@@ -1,22 +1,28 @@
 'use client';
 
 import React, { useEffect, useRef, useState, useCallback } from 'react';
-import { useMachine } from '@xstate/react';
-import { tutorialMachine, type MountType } from '@/state/tutorialMachine';
 import { MeasurementProviderWrapper, useMeasurement } from '@/providers/MeasurementProvider';
 import { CameraOverlay, CameraWarnings } from '@/components/CameraOverlay';
 import { formatInchesFraction, formatConfidence, formatDimensions } from '@/utils/format';
 import { roundUpToSixteenth } from '@/utils/format';
-import { shouldRecommendAdditionalPass } from '@/utils/aggregate';
+import { shouldRecommendAdditionalPass, aggregateResults } from '@/utils/aggregate';
 import { appendDebugRecord, getDebugLog, clearDebugLog, copyDebugLogToClipboard, downloadDebugLog } from '@/utils/debugLog';
-import type { PassResult } from '@/providers/types';
+import type { PassResult, ConfidenceCategory } from '@/providers/types';
+
+type MountType = 'inside' | 'outside';
+type Screen = 'home' | 'permission' | 'mountSelection' | 'pass1' | 'pass1Review' | 'pass2' | 'pass2Review' | 'pass3' | 'completion' | 'details' | 'settings';
 
 function TutorialFlow() {
-  const [state, send] = useMachine(tutorialMachine);
   const measurement = useMeasurement();
   const containerRef = useRef<HTMLDivElement>(null);
   const [containerSize, setContainerSize] = useState({ width: 0, height: 0 });
   const [isCapturing, setIsCapturing] = useState(false);
+
+  // Simple state management using React useState
+  const [screen, setScreen] = useState<Screen>('home');
+  const [mountType, setMountType] = useState<MountType | null>(null);
+  const [passes, setPasses] = useState<PassResult[]>([]);
+  const [permissionDenied, setPermissionDenied] = useState(false);
 
   // Track container size for overlay positioning
   useEffect(() => {
@@ -41,205 +47,217 @@ function TutorialFlow() {
 
     const result = await measurement.capture();
     if (result) {
-      // Log to debug storage
       appendDebugRecord(result, measurement.provider?.providerType || 'mock');
-      send({ type: 'CAPTURE_COMPLETE', result });
+      setPasses(prev => [...prev, result]);
+
+      // Move to review screen
+      if (screen === 'pass1') setScreen('pass1Review');
+      else if (screen === 'pass2') setScreen('pass2Review');
+      else if (screen === 'pass3') setScreen('completion');
     }
 
     setIsCapturing(false);
-  }, [measurement, send, isCapturing]);
+  }, [measurement, isCapturing, screen]);
 
   // Initialize measurement provider when entering camera states
   useEffect(() => {
-    const cameraStates = ['pass1', 'pass2', 'pass3'];
-    if (cameraStates.includes(state.value as string) && !measurement.isInitialized) {
+    const cameraStates: Screen[] = ['pass1', 'pass2', 'pass3'];
+    if (cameraStates.includes(screen) && !measurement.isInitialized) {
       measurement.initialize();
     }
-  }, [state.value, measurement]);
+  }, [screen, measurement]);
 
-  // Render based on current state
-  const renderState = () => {
-    switch (state.value) {
-      case 'home':
-        return <HomeScreen onStart={() => send({ type: 'START' })} onSettings={() => send({ type: 'VIEW_SETTINGS' })} />;
+  // Calculate final results
+  const finalResults = passes.length > 0 ? aggregateResults(passes) : null;
 
-      case 'permission':
-        return (
-          <PermissionScreen
-            isDenied={state.context.cameraPermissionDenied}
-            onGranted={() => send({ type: 'PERMISSION_GRANTED' })}
-            onDenied={() => send({ type: 'PERMISSION_DENIED' })}
-            onRetry={() => send({ type: 'RETRY_PERMISSION' })}
-            onBack={() => send({ type: 'BACK' })}
-          />
-        );
+  // Navigation helpers
+  const goToScreen = (s: Screen) => setScreen(s);
 
-      case 'mountSelection':
-        return (
-          <MountSelectionScreen
-            onSelect={(mountType) => send({ type: 'SELECT_MOUNT', mountType })}
-            onBack={() => send({ type: 'BACK' })}
-          />
-        );
-
-      case 'pass1':
-      case 'pass2':
-      case 'pass3':
-        const passNumber = state.value === 'pass1' ? 1 : state.value === 'pass2' ? 2 : 3;
-        return (
-          <div className="h-screen flex flex-col bg-black">
-            {/* Header */}
-            <div className="bg-gray-900 text-white p-4 flex items-center justify-between">
-              <button
-                onClick={() => send({ type: 'BACK' })}
-                className="text-white"
-              >
-                ← Back
-              </button>
-              <span className="font-semibold">Pass {passNumber} of {passNumber <= 2 ? '2+' : '3'}</span>
-              <div className="w-12" /> {/* Spacer */}
-            </div>
-
-            {/* Camera view area */}
-            <div ref={containerRef} className="flex-1 relative bg-gray-800">
-              {measurement.isInitializing && (
-                <div className="absolute inset-0 flex items-center justify-center">
-                  <div className="text-white">Initializing camera...</div>
-                </div>
-              )}
-
-              {measurement.isInitialized && (
-                <>
-                  {/* Mock provider shows a placeholder */}
-                  {measurement.provider?.providerType === 'mock' && (
-                    <div className="absolute inset-0 bg-gradient-to-b from-gray-700 to-gray-900 flex items-center justify-center">
-                      <div className="text-gray-400 text-sm">Mock Camera View</div>
-                    </div>
-                  )}
-
-                  {/* Video element for web provider */}
-                  {measurement.videoElement && (
-                    <video
-                      ref={(el) => {
-                        if (el && measurement.videoElement) {
-                          el.srcObject = measurement.videoElement.srcObject;
-                        }
-                      }}
-                      autoPlay
-                      playsInline
-                      muted
-                      className="absolute inset-0 w-full h-full object-cover"
-                    />
-                  )}
-
-                  {/* Overlay */}
-                  <CameraOverlay
-                    detection={measurement.detection}
-                    stability={measurement.stability}
-                    suggestCapture={measurement.suggestCapture}
-                    containerWidth={containerSize.width}
-                    containerHeight={containerSize.height}
-                  />
-
-                  {/* Warnings */}
-                  <CameraWarnings
-                    stability={measurement.stability}
-                    suggestCapture={measurement.suggestCapture}
-                  />
-                </>
-              )}
-            </div>
-
-            {/* Capture button */}
-            <div className="bg-gray-900 p-6 flex justify-center">
-              <button
-                onClick={handleCapture}
-                disabled={isCapturing || !measurement.isInitialized}
-                className={`w-20 h-20 rounded-full border-4 flex items-center justify-center ${
-                  measurement.suggestCapture
-                    ? 'bg-green-600 border-green-400'
-                    : 'bg-white border-gray-300'
-                } ${isCapturing ? 'opacity-50' : ''}`}
-              >
-                {isCapturing ? (
-                  <span className="text-gray-600">...</span>
-                ) : (
-                  <div className={`w-14 h-14 rounded-full ${measurement.suggestCapture ? 'bg-green-400' : 'bg-red-500'}`} />
-                )}
-              </button>
-            </div>
-
-            {/* Instructions */}
-            <div className="bg-gray-900 text-white text-center pb-6 text-sm">
-              {passNumber === 1 && 'Position window in frame and capture'}
-              {passNumber === 2 && 'Capture from a slightly different angle'}
-              {passNumber === 3 && 'Optional: One more capture for better accuracy'}
-            </div>
-          </div>
-        );
-
-      case 'pass1Review':
-      case 'pass2Review':
-        const reviewPassNumber = state.value === 'pass1Review' ? 1 : 2;
-        const lastPass = state.context.passes[state.context.passes.length - 1];
-        const recommendation = shouldRecommendAdditionalPass(state.context.passes);
-
-        return (
-          <PassReviewScreen
-            passNumber={reviewPassNumber}
-            result={lastPass}
-            showPass3Option={reviewPassNumber === 2}
-            recommendPass3={recommendation.recommend}
-            recommendReason={recommendation.reason}
-            onContinue={() => {
-              if (reviewPassNumber === 1) {
-                send({ type: 'CONTINUE_TO_PASS2' });
-              } else if (recommendation.recommend) {
-                send({ type: 'CONTINUE_TO_PASS3' });
-              } else {
-                send({ type: 'VIEW_RESULTS' });
-              }
-            }}
-            onSkipToResults={reviewPassNumber === 2 ? () => send({ type: 'VIEW_RESULTS' }) : undefined}
-            onBack={() => send({ type: 'BACK' })}
-          />
-        );
-
-      case 'completion':
-        return (
-          <CompletionScreen
-            width={state.context.finalWidth!}
-            height={state.context.finalHeight!}
-            confidence={state.context.finalConfidence!}
-            category={state.context.finalCategory!}
-            passCount={state.context.passes.length}
-            mountType={state.context.mountType!}
-            onViewDetails={() => send({ type: 'VIEW_DETAILS' })}
-            onSettings={() => send({ type: 'VIEW_SETTINGS' })}
-            onRestart={() => {
-              measurement.cleanup();
-              send({ type: 'RESTART' });
-            }}
-          />
-        );
-
-      case 'details':
-        return (
-          <DetailsScreen
-            passes={state.context.passes}
-            onBack={() => send({ type: 'BACK' })}
-          />
-        );
-
-      case 'settings':
-        return <SettingsScreen onBack={() => send({ type: 'BACK' })} />;
-
-      default:
-        return <div>Unknown state: {String(state.value)}</div>;
-    }
+  const restart = () => {
+    measurement.cleanup();
+    setPasses([]);
+    setMountType(null);
+    setPermissionDenied(false);
+    setScreen('home');
   };
 
-  return renderState();
+  // Render based on current screen
+  switch (screen) {
+    case 'home':
+      return <HomeScreen onStart={() => goToScreen('permission')} onSettings={() => goToScreen('settings')} />;
+
+    case 'permission':
+      return (
+        <PermissionScreen
+          isDenied={permissionDenied}
+          onGranted={() => {
+            setPermissionDenied(false);
+            goToScreen('mountSelection');
+          }}
+          onDenied={() => setPermissionDenied(true)}
+          onRetry={() => setPermissionDenied(false)}
+          onBack={() => goToScreen('home')}
+        />
+      );
+
+    case 'mountSelection':
+      return (
+        <MountSelectionScreen
+          onSelect={(mt) => {
+            setMountType(mt);
+            goToScreen('pass1');
+          }}
+          onBack={() => goToScreen('permission')}
+        />
+      );
+
+    case 'pass1':
+    case 'pass2':
+    case 'pass3':
+      const passNumber = screen === 'pass1' ? 1 : screen === 'pass2' ? 2 : 3;
+      const backScreen: Screen = screen === 'pass1' ? 'mountSelection' : screen === 'pass2' ? 'pass1Review' : 'pass2Review';
+      return (
+        <div className="h-screen flex flex-col bg-black">
+          <div className="bg-gray-900 text-white p-4 flex items-center justify-between">
+            <button onClick={() => goToScreen(backScreen)} className="text-white">
+              ← Back
+            </button>
+            <span className="font-semibold">Pass {passNumber} of {passNumber <= 2 ? '2+' : '3'}</span>
+            <div className="w-12" />
+          </div>
+
+          <div ref={containerRef} className="flex-1 relative bg-gray-800">
+            {measurement.isInitializing && (
+              <div className="absolute inset-0 flex items-center justify-center">
+                <div className="text-white">Initializing camera...</div>
+              </div>
+            )}
+
+            {measurement.isInitialized && (
+              <>
+                {measurement.provider?.providerType === 'mock' && (
+                  <div className="absolute inset-0 bg-gradient-to-b from-gray-700 to-gray-900 flex items-center justify-center">
+                    <div className="text-gray-400 text-sm">Mock Camera View</div>
+                  </div>
+                )}
+
+                {measurement.videoElement && (
+                  <video
+                    ref={(el) => {
+                      if (el && measurement.videoElement) {
+                        el.srcObject = measurement.videoElement.srcObject;
+                      }
+                    }}
+                    autoPlay
+                    playsInline
+                    muted
+                    className="absolute inset-0 w-full h-full object-cover"
+                  />
+                )}
+
+                <CameraOverlay
+                  detection={measurement.detection}
+                  stability={measurement.stability}
+                  suggestCapture={measurement.suggestCapture}
+                  containerWidth={containerSize.width}
+                  containerHeight={containerSize.height}
+                />
+
+                <CameraWarnings
+                  stability={measurement.stability}
+                  suggestCapture={measurement.suggestCapture}
+                />
+              </>
+            )}
+          </div>
+
+          <div className="bg-gray-900 p-6 flex justify-center">
+            <button
+              onClick={handleCapture}
+              disabled={isCapturing || !measurement.isInitialized}
+              className={`w-20 h-20 rounded-full border-4 flex items-center justify-center ${
+                measurement.suggestCapture
+                  ? 'bg-green-600 border-green-400'
+                  : 'bg-white border-gray-300'
+              } ${isCapturing ? 'opacity-50' : ''}`}
+            >
+              {isCapturing ? (
+                <span className="text-gray-600">...</span>
+              ) : (
+                <div className={`w-14 h-14 rounded-full ${measurement.suggestCapture ? 'bg-green-400' : 'bg-red-500'}`} />
+              )}
+            </button>
+          </div>
+
+          <div className="bg-gray-900 text-white text-center pb-6 text-sm">
+            {passNumber === 1 && 'Position window in frame and capture'}
+            {passNumber === 2 && 'Capture from a slightly different angle'}
+            {passNumber === 3 && 'Optional: One more capture for better accuracy'}
+          </div>
+        </div>
+      );
+
+    case 'pass1Review':
+    case 'pass2Review':
+      const reviewPassNumber = screen === 'pass1Review' ? 1 : 2;
+      const lastPass = passes[passes.length - 1];
+      const recommendation = shouldRecommendAdditionalPass(passes);
+
+      return (
+        <PassReviewScreen
+          passNumber={reviewPassNumber}
+          result={lastPass}
+          showPass3Option={reviewPassNumber === 2}
+          recommendPass3={recommendation.recommend}
+          recommendReason={recommendation.reason}
+          onContinue={() => {
+            if (reviewPassNumber === 1) {
+              goToScreen('pass2');
+            } else if (recommendation.recommend) {
+              goToScreen('pass3');
+            } else {
+              goToScreen('completion');
+            }
+          }}
+          onSkipToResults={reviewPassNumber === 2 ? () => goToScreen('completion') : undefined}
+          onBack={() => goToScreen(reviewPassNumber === 1 ? 'pass1' : 'pass2')}
+        />
+      );
+
+    case 'completion':
+      if (!finalResults) return null;
+      return (
+        <CompletionScreen
+          width={finalResults.widthInches}
+          height={finalResults.heightInches}
+          confidence={finalResults.averageConfidence}
+          category={finalResults.category}
+          passCount={finalResults.passCount}
+          mountType={mountType!}
+          onViewDetails={() => goToScreen('details')}
+          onSettings={() => goToScreen('settings')}
+          onRestart={restart}
+        />
+      );
+
+    case 'details':
+      return (
+        <DetailsScreen
+          passes={passes}
+          onBack={() => goToScreen('completion')}
+        />
+      );
+
+    case 'settings':
+      return (
+        <SettingsScreen
+          onBack={() => goToScreen(finalResults ? 'completion' : 'home')}
+        />
+      );
+
+    default:
+      return <div>Unknown screen</div>;
+  }
 }
 
 // Home Screen
@@ -253,7 +271,7 @@ function HomeScreen({ onStart, onSettings }: { onStart: () => void; onSettings: 
 
       <button
         onClick={onStart}
-        className="bg-blue-600 text-white px-8 py-4 rounded-lg text-lg font-semibold mb-4 w-full max-w-xs"
+        className="bg-blue-600 text-white px-8 py-4 rounded-lg text-lg font-semibold mb-4 w-full max-w-xs active:bg-blue-700"
       >
         Start Measuring
       </button>
@@ -265,7 +283,7 @@ function HomeScreen({ onStart, onSettings }: { onStart: () => void; onSettings: 
         Settings
       </button>
 
-      <p className="text-gray-400 text-xs mt-8">Version 0.1.0</p>
+      <p className="text-gray-400 text-xs mt-8">Version 0.1.1</p>
     </div>
   );
 }
@@ -289,8 +307,6 @@ function PermissionScreen({
   const requestPermission = async () => {
     setIsRequesting(true);
     try {
-      // For mock provider, just simulate success
-      // For real provider, would request camera permission here
       await new Promise((resolve) => setTimeout(resolve, 500));
       onGranted();
     } catch {
@@ -323,7 +339,7 @@ function PermissionScreen({
         <button
           onClick={isDenied ? onRetry : requestPermission}
           disabled={isRequesting}
-          className="bg-blue-600 text-white px-8 py-4 rounded-lg text-lg font-semibold w-full max-w-xs"
+          className="bg-blue-600 text-white px-8 py-4 rounded-lg text-lg font-semibold w-full max-w-xs active:bg-blue-700"
         >
           {isRequesting ? 'Requesting...' : isDenied ? 'Try Again' : 'Allow Camera Access'}
         </button>
@@ -354,7 +370,7 @@ function MountSelectionScreen({
       <div className="space-y-4">
         <button
           onClick={() => onSelect('inside')}
-          className="w-full p-6 border-2 border-gray-200 rounded-lg text-left hover:border-blue-600"
+          className="w-full p-6 border-2 border-gray-200 rounded-lg text-left active:border-blue-600"
         >
           <span className="font-semibold text-gray-900">Inside Mount</span>
           <p className="text-gray-600 text-sm mt-1">
@@ -364,7 +380,7 @@ function MountSelectionScreen({
 
         <button
           onClick={() => onSelect('outside')}
-          className="w-full p-6 border-2 border-gray-200 rounded-lg text-left hover:border-blue-600"
+          className="w-full p-6 border-2 border-gray-200 rounded-lg text-left active:border-blue-600"
         >
           <span className="font-semibold text-gray-900">Outside Mount</span>
           <p className="text-gray-600 text-sm mt-1">
@@ -434,7 +450,7 @@ function PassReviewScreen({
       <div className="mt-auto space-y-3">
         <button
           onClick={onContinue}
-          className="bg-blue-600 text-white px-8 py-4 rounded-lg text-lg font-semibold w-full"
+          className="bg-blue-600 text-white px-8 py-4 rounded-lg text-lg font-semibold w-full active:bg-blue-700"
         >
           {passNumber === 1 ? 'Continue to Pass 2' : recommendPass3 ? 'Take Pass 3' : 'View Results'}
         </button>
@@ -467,7 +483,7 @@ function CompletionScreen({
   width: number;
   height: number;
   confidence: number;
-  category: string;
+  category: ConfidenceCategory;
   passCount: number;
   mountType: MountType;
   onViewDetails: () => void;
@@ -518,7 +534,7 @@ function CompletionScreen({
 
         <button
           onClick={onRestart}
-          className="bg-blue-600 text-white px-8 py-4 rounded-lg font-semibold w-full"
+          className="bg-blue-600 text-white px-8 py-4 rounded-lg font-semibold w-full active:bg-blue-700"
         >
           Measure Another Window
         </button>
@@ -631,19 +647,19 @@ function SettingsScreen({ onBack }: { onBack: () => void }) {
           <div className="flex gap-2 flex-wrap">
             <button
               onClick={handleCopy}
-              className="bg-gray-100 text-gray-900 px-4 py-2 rounded text-sm"
+              className="bg-gray-100 text-gray-900 px-4 py-2 rounded text-sm active:bg-gray-200"
             >
               {copyStatus || 'Copy to Clipboard'}
             </button>
             <button
               onClick={handleDownload}
-              className="bg-gray-100 text-gray-900 px-4 py-2 rounded text-sm"
+              className="bg-gray-100 text-gray-900 px-4 py-2 rounded text-sm active:bg-gray-200"
             >
               Download JSON
             </button>
             <button
               onClick={handleClear}
-              className="bg-red-100 text-red-800 px-4 py-2 rounded text-sm"
+              className="bg-red-100 text-red-800 px-4 py-2 rounded text-sm active:bg-red-200"
             >
               Clear Log
             </button>
@@ -663,7 +679,7 @@ function SettingsScreen({ onBack }: { onBack: () => void }) {
 
         <div className="pt-6 border-t border-gray-200">
           <p className="text-gray-500 text-xs">
-            Window Measurement App v0.1.0
+            Window Measurement App v0.1.1
             <br />
             Using Mock Provider for UI development
           </p>
